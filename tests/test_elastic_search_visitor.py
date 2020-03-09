@@ -1625,6 +1625,7 @@ def test_elastic_search_visitor_author_lastname():
 
 
 def test_elastic_search_visitor_author_lastname_initial():
+    import ipdb; ipdb.set_trace()
     query_str = 'a ellis, j'
     expected_query = {
         "nested": {

@@ -36,7 +36,7 @@ from unicodedata import normalize
 
 from inspire_schemas.utils import convert_old_publication_info_to_new
 from inspire_utils.helpers import force_list
-from inspire_utils.name import normalize_name
+from inspire_utils.name import normalize_name, ParsedName
 
 from inspire_query_parser import ast
 from inspire_query_parser.config import (
@@ -90,6 +90,10 @@ class ElasticSearchVisitor(Visitor):
     # TODO Inspire mappings aren't in their own repository. Currently using the `records-hep` mapping.
     KEYWORD_TO_ES_FIELDNAME = {
         'author': 'authors.full_name',
+        'author_first_name': 'authors.first_name',
+        'author_last_name': 'authors.last_name',
+        'author_first_name_raw': 'authors.first_name.raw',
+        'author_last_name_raw': 'authors.last_name.raw',
         'author-count': 'author_count',
         'citedby': 'citedby',
         'collaboration': 'collaborations.value',
@@ -208,54 +212,69 @@ class ElasticSearchVisitor(Visitor):
             Additionally, doing a ``match`` with ``"operator": "and"`` in order to be even more exact in our search, by
             requiring that ``full_name`` field contains both
         """
-        name_variations = [name_variation.lower()
-                           for name_variation
-                           in generate_minimal_name_variations(author_name)]
 
-        # When the query contains sufficient data, i.e. full names, e.g. ``Mele, Salvatore`` (and not ``Mele, S`` or
-        # ``Mele``) we can improve our filtering in order to filter out results containing records with authors that
-        # have the same non lastnames prefix, e.g. 'Mele, Samuele'.
-        if author_name_contains_fullnames(author_name):
-            specialized_author_filter = [
-                {
-                    'bool': {
-                        'must': [
-                            {
-                                'term': {ElasticSearchVisitor.AUTHORS_NAME_VARIATIONS_FIELD: names_variation[0]}
-                            },
-                            generate_match_query(
-                                ElasticSearchVisitor.KEYWORD_TO_ES_FIELDNAME['author'],
-                                names_variation[1],
-                                with_operator_and=True
-                            )
-                        ]
-                    }
-                } for names_variation
-                in product(name_variations, name_variations)
-            ]
+        parsed_name = ParsedName(author_name)
 
-        else:
-            # In the case of initials or even single lastname search, filter with only the name variations.
-            specialized_author_filter = [
-                {'term': {ElasticSearchVisitor.AUTHORS_NAME_VARIATIONS_FIELD: name_variation}}
-                for name_variation in name_variations
-            ]
+        def _is_initial(name_part):
+            return len(name_part) == 1 or u'.' in name_part
 
-        query = {
-            'bool': {
-                'filter': {
-                    'bool': {
-                        'should': specialized_author_filter
-                    }
-                },
-                'must': {
-                    'match': {
-                        ElasticSearchVisitor.KEYWORD_TO_ES_FIELDNAME['author']: author_name
+        # This case we treat ti just like lastname
+        if len(parsed_name) == 1:
+            query = {
+                'bool': {
+                    'must': {
+                        'match': {
+                            ElasticSearchVisitor.KEYWORD_TO_ES_FIELDNAME['author_last_name_raw']: author_name
+                        }
                     }
                 }
             }
-        }
+            return generate_nested_query(ElasticSearchVisitor.AUTHORS_NESTED_QUERY_PATH, query)
 
+        if ',' not in author_name:
+            parts = author_name.split(' ')
+            lastname = parts[-1]
+            firstnames = parts[0:-1]
+        else:
+            parts = author_name.split(',')
+            lastname = parts[1]
+            firstnames = parts[0].split(' ')
+
+        # do something else
+        query_build = []
+        for name in firstnames:
+            if _is_initial(name):
+                query_build.append({
+                    "match": {
+                        "authors.first_name": name.strip()
+                    }
+                })
+            else:
+                query_build.append({
+                    "prefix": {
+                        "authors.first_name.raw": name.strip()
+                    }
+                })
+
+        query = {
+            'bool': {
+                'must': [
+                    {
+                        "match": {
+                            "authors.last_name.raw": {
+                                "query": lastname.strip(),
+                                "operator": "AND"
+                            }
+                        }
+                    },
+                    {
+                        "bool": {
+                            "must": query_build
+                        }
+                    }
+                ]
+            }
+        }
         return generate_nested_query(ElasticSearchVisitor.AUTHORS_NESTED_QUERY_PATH, query)
 
     def _generate_exact_author_query(self, author_name_or_bai):
