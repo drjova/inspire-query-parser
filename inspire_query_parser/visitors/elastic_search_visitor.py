@@ -237,8 +237,8 @@ class ElasticSearchVisitor(Visitor):
             firstnames = parts[0:-1]
         else:
             parts = author_name.split(',')
-            lastname = parts[1]
-            firstnames = parts[0].split(' ')
+            lastname = parts[0]
+            firstnames = parts[1].replace('.', ' ').split(' ')
 
         # do something else
         query_build = []
@@ -252,7 +252,7 @@ class ElasticSearchVisitor(Visitor):
             else:
                 query_build.append({
                     "prefix": {
-                        "authors.first_name.raw": name.strip()
+                        "authors.first_name.raw": name.strip().lower()
                     }
                 })
 
